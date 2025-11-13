@@ -1,250 +1,194 @@
-// app/api/compat/route.ts - Gemini API 연동 (JSON 궁합 리포트 전용)
+// app/api/compat/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const MODEL = process.env.GEMINI_MODEL || 'models/gemini-2.5-flash';
-const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || ''; // 폴백 모델 환경 변수 사용
-const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1';
+const API_KEY = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
+const MODEL   = process.env.GEMINI_MODEL || 'models/gemini-2.5-flash';
+const BASE    = process.env.GEMINI_BASE  || 'https://generativelanguage.googleapis.com';
 
-type JsonSchema = Record<string, string>;
-
-interface TopicConfig {
-  system: string;
-  userRequest: string;
-  jsonSchema: JsonSchema;
-}
-
-// ⚠️ 퀄리티 향상을 위해 JSON 스키마에 'explanation' 항목 추가
-const BASE_JSON_SCHEMA: JsonSchema = {
-  score: '30~98 정수',
-  facets: '{"emotion":"0~100","comm":"0~100","reality":"0~100","growth":"0~100","sustain":"0~100"}',
-  summary: '2~3문장',
-  // 퀄리티 향상: 각 점수에 대한 구체적인 해설
-  explanation: '{"emotion":"1문장 해설 및 조언","comm":"1문장 해설 및 조언","reality":"1문장 해설 및 조언","growth":"1문장 해설 및 조언","sustain":"1문장 해설 및 조언"}',
-  insights: '["실전 조언 1","실전 조언 2","실전 조언 3"]',
-  oneliner: '짧은 한 문장',
+type Body = {
+  topic: 'compatibility_basic'|'red_line'|'lucky_color'|string;
+  man_birth: string;    // YYYY-MM-DD
+  woman_birth: string;  // YYYY-MM-DD
+  man_mbti: string;
+  woman_mbti: string;
+  man_blood?: 'A'|'B'|'O'|'AB';
+  woman_blood?: 'A'|'B'|'O'|'AB';
+  man_time?: string;    // HH:MM
+  woman_time?: string;  // HH:MM
 };
 
-const TOPIC_MAP: Record<string, TopicConfig> = {
-  compatibility_basic: {
-    // ⚠️ 퀄리티 향상: system 프롬프트에 근거와 구체적인 조언 요청 추가
-    system: `
-당신은 사주(연월일시), MBTI, 혈액형 정보를 바탕으로
-두 사람의 "정서적 호흡"과 "현실적인 지속 가능성"을 함께 보는 궁합 코치이다.
-운명론적 단정 대신, 조절 가능한 행동 전략을 제안한다.
-특히, JSON의 'explanation' 필드에 각 항목 점수가 나온 **구체적인 근거와 행동 조언**을 담아야 한다.
-한국 사용자를 대상으로 한국어로만 답변한다.
-JSON 형식으로만 답하며, 불필요한 설명 텍스트는 넣지 않는다.
-`,
-    userRequest:
-      '사주·MBTI·혈액형을 가볍게 종합해 두 사람 관계의 가장 취약한 지점을 짚고, 이를 보완할 수 있는 구체적 행동 전략을 제시해줘.',
-    jsonSchema: BASE_JSON_SCHEMA,
-  },
-  red_line: {
-    system: `
-당신은 연인/부부 관계에서 절대 건드리면 안 되는 "레드 라인"을 찾아내고,
-갈등을 피하거나 줄일 수 있는 실전 커뮤니케이션 가이드를 주는 코치이다.
-사주, MBTI, 혈액형 정보를 참고하되, 고정관념에 빠지지 않고 현실적인 조언을 중시한다.
-JSON의 'explanation' 필드에 각 항목 점수가 나온 구체적인 근거와 행동 조언을 담아야 한다.
-`,
-    userRequest:
-      '두 사람이 절대 건드리면 안 되는 레드 라인과, 그 상황을 피하거나 복구하기 위한 대화/행동 전략을 알려줘.',
-    jsonSchema: BASE_JSON_SCHEMA,
-  },
-  lucky_color: {
-    system: `
-당신은 두 사람의 기질과 상호작용을 기반으로,
-함께 있을 때 에너지가 올라가는 색상/공간/무드 등을 추천하는 코치이다.
-JSON의 'explanation' 필드에 각 항목 점수가 나온 구체적인 근거와 행동 조언을 담아야 한다.
-`,
-    userRequest:
-      '두 사람이 함께 있을 때 분위기를 좋게 만들어주는 컬러, 공간 스타일, 데이트 무드를 제안해줘.',
-    jsonSchema: BASE_JSON_SCHEMA,
-  },
-};
+const JSON_SPEC = `
+반드시 아래 JSON만 반환(설명문/코드펜스 금지):
 
-function buildPrompt(topicKey: string, payload: any): string {
-  const topic = TOPIC_MAP[topicKey] ?? TOPIC_MAP['compatibility_basic'];
-
-  const schemaExplain = Object.entries(topic.jsonSchema)
-    .map(([k, v]) => `- ${k}: ${v}`)
-    .join('\n');
-
-  return `
-[역할]
-${topic.system.trim()}
-
-[분석 대상]
-- 남자 생년월일: ${payload.man_birth || '(미입력)'}
-- 여자 생년월일: ${payload.woman_birth || '(미입력)'}
-// ⚠️ 버그 수정: man_mbti 자리에 man_mbti가 들어가야 합니다.
-- 남자 MBTI: ${payload.man_mbti || '(미입력)'}
-// ⚠️ 버그 수정: woman_mbti 자리에 woman_mbti가 들어가야 합니다.
-- 여자 MBTI: ${payload.woman_mbti || '(미입력)'}
-- 남자 혈액형: ${payload.man_blood || '(미입력)'}
-- 여자 혈액형: ${payload.woman_blood || '(미입력)'}
-- 남자 출생 시간: ${payload.man_time || '(미입력)'}
-- 여자 출생 시간: ${payload.woman_time || '(미입력)'}
-
-[요청]
-${topic.userRequest}
-
-[출력 형식]
-아래 JSON 스키마를 정확히 따르는 JSON만 반환해.
-추가 설명 텍스트나 마크다운, 코드블록은 절대 넣지 마.
-
-스키마 설명:
-${schemaExplain}
-
-JSON 예시 (형식만 참고):
 {
-  "score": 78,
-  "facets": { "emotion": 80, "comm": 84, "reality": 70, "growth": 90, "sustain": 82 },
-  "explanation": { "emotion": "감정 교류는 원활하며, 남성의 공감 능력이 핵심입니다.", "comm": "소통에 오해가 없도록 문맥을 명확히 하는 연습이 필요합니다." }, // 퀄리티 향상 예시
-  "summary": "2~3문장으로 전반적인 궁합을 정리",
-  "insights": ["실전 조언 1", "실전 조언 2", "실전 조언 3"],
-  "oneliner": "짧고 임팩트 있는 한 문장"
+ "score": <30~98 정수>,
+ "facets": { "정서":0~100, "소통":0~100, "현실":0~100, "성장":0~100, "지속":0~100 },
+ "summary": "2~3문장",
+ "insights": ["불릿1","불릿2","불릿3"],
+ "oneliner": "짧은 한 문장",
+ "explanation": { "정서":"한 문장", "소통":"한 문장", "현실":"한 문장", "성장":"한 문장", "지속":"한 문장" }
 }
 `;
+
+const SYSTEM = `
+너는 사주(연·월·일·시는 기질·리듬 수준), MBTI(의사소통/갈등복구/의사결정 중심), 혈액형(문화권 일반론 한정)을
+편향 없이 종합 분석하는 코치다. 운명론 금지, 조절 가능한 행동전략 중심. 한국어, 짧고 단정한 코칭 톤.
+시간/혈액형 미입력 시 일반론으로 합리적 보정. 과한 상투어/미신 금지. 실전 조언에 초점.
+${JSON_SPEC}
+`;
+
+function sanitizeJson(text: string) {
+  // 코드펜스 제거 및 끝부분 정리
+  let t = text.trim();
+  if (t.startsWith('```')) t = t.replace(/^```[a-z]*\n?/i, '');
+  if (t.endsWith('```')) t = t.replace(/```$/, '');
+  // 마지막 괄호 정합성 간단 보정
+  const lastObj = t.lastIndexOf('}');
+  if (lastObj !== -1) t = t.slice(0, lastObj + 1);
+  return t;
 }
 
-function extractJson(text: string): any {
-  try {
-    return JSON.parse(text);
-  } catch {
-    const first = text.indexOf('{');
-    const last = text.lastIndexOf('}');
-    if (first >= 0 && last > first) {
-      const sliced = text.slice(first, last + 1);
-      try {
-        return JSON.parse(sliced);
-      } catch {
-        // ignore
-      }
-    }
-  }
-  return null;
+async function callGemini(payload: any, signal: AbortSignal) {
+  const url = `${BASE}/v1beta/models/${encodeURIComponent(MODEL)}:generateContent?key=${API_KEY}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    signal,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      contents: [
+        { role: 'user', parts: [{ text: SYSTEM }] },
+        { role: 'user', parts: [{ text: payload }] }
+      ],
+      generationConfig: {
+        temperature: 0.6,
+        topK: 40,
+        topP: 0.9,
+        maxOutputTokens: 800,
+        responseMimeType: 'application/json'
+      }
+    })
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(()=>'');
+    throw new Error(`Gemini ${res.status}: ${msg}`);
+  }
+  const json = await res.json();
+  // v1beta 응답 파싱
+  const text =
+    json?.candidates?.[0]?.content?.parts?.[0]?.text ??
+    json?.candidates?.[0]?.content?.parts?.[0]?.inline_data?.data ??
+    '';
+  return String(text || '');
 }
 
-function clampScoreValue(v: unknown, min: number, max: number, fallback: number): number {
-  const n = Number(v);
-  if (Number.isNaN(n)) return fallback;
-  return Math.max(min, Math.min(max, n));
-}
+function normalizeOutput(parsed: any) {
+  const num = (v: any, d: number, min=0, max=100) => {
+    const n = Number(v);
+    if (Number.isNaN(n)) return d;
+    return Math.max(min, Math.min(max, Math.round(n)));
+  };
 
-function normalizeFacetsOut(facets: any): FacetsOut {
-  const base: FacetsOut = {
-    emotion: 80,
-    comm: 80,
-    reality: 70,
-    growth: 90,
-    sustain: 80,
-  };
-  if (!facets || typeof facets !== 'object') return base;
-  return {
-    emotion: clampScoreValue((facets as any).emotion, 0, 100, base.emotion),
-    comm: clampScoreValue((facets as any).comm, 0, 100, base.comm),
-    reality: clampScoreValue((facets as any).reality, 0, 100, base.reality),
-    growth: clampScoreValue((facets as any).growth, 0, 100, base.growth),
-    sustain: clampScoreValue((facets as any).sustain, 0, 100, base.sustain),
-  };
-}
+  const score = num(parsed?.score, 80, 30, 98);
+  const facets = parsed?.facets || {};
+  const normFacets = {
+    "정서":   num(facets["정서"], 80),
+    "소통":   num(facets["소통"], 80),
+    "현실":   num(facets["현실"], 70),
+    "성장":   num(facets["성장"], 90),
+    "지속":   num(facets["지속"], 80),
+  };
 
-type FacetsOut = {
-  emotion: number;
-  comm: number;
-  reality: number;
-  growth: number;
-  sustain: number;
-};
+  const explanation = parsed?.explanation || {};
+  return {
+    score,
+    facets: normFacets,
+    summary: String(parsed?.summary || '').slice(0, 400),
+    insights: Array.isArray(parsed?.insights) ? parsed.insights.slice(0,3).map(String) : [],
+    oneliner: String(parsed?.oneliner || '').slice(0, 80),
+    explanation: {
+      "정서": String(explanation["정서"] || ''),
+      "소통": String(explanation["소통"] || ''),
+      "현실": String(explanation["현실"] || ''),
+      "성장": String(explanation["성장"] || ''),
+      "지속": String(explanation["지속"] || ''),
+    }
+  };
+}
 
 export async function POST(req: NextRequest) {
-  const currentModel = FALLBACK_MODEL || MODEL; // 폴백 모델이 있다면 우선 사용
-  
-  try {
-    const apiKey = process.env.GEMINI_API_KEY; 
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: 'NO_API_KEY', detail: 'GEMINI_API_KEY가 설정되지 않았습니다.' },
-        { status: 500 },
-      );
-    }
+  try {
+    if (!API_KEY) {
+      return NextResponse.json({ error: true, detail: 'API 키가 설정되지 않았습니다.' }, { status: 500 });
+    }
 
-    const body = await req.json();
-    const topicKey: string = body.topic || 'compatibility_basic';
+    const body = await req.json() as Body;
+    const topic = (body.topic || 'compatibility_basic') as Body['topic'];
 
-    const prompt = buildPrompt(topicKey, body);
+    if (!body.man_birth || !body.woman_birth || !body.man_mbti || !body.woman_mbti) {
+      return NextResponse.json({ error: true, detail: '필수 입력(생년월일/MBTI)이 누락되었습니다.' }, { status: 400 });
+    }
 
-    // ⚠️ 재시도 로직이 없으므로, 현재는 폴백 모델이 환경 변수로 설정되어야만 적용됩니다.
-    const res = await fetch(`${GEMINI_BASE}/${currentModel}:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: prompt }],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.9,
-          topP: 0.95,
-          maxOutputTokens: 512, // 퀄리티 향상을 위해 토큰 증가
-        },
-      }),
-    });
+    // 사용자 요청 페이로드(프롬프트)
+    const userPayload = `
+[토픽] ${topic}
+[남] 생년월일=${body.man_birth}, 시간=${body.man_time || '미상'}, MBTI=${body.man_mbti}, 혈액형=${body.man_blood || '미상'}
+[여] 생년월일=${body.woman_birth}, 시간=${body.woman_time || '미상'}, MBTI=${body.woman_mbti}, 혈액형=${body.woman_blood || '미상'}
 
-    if (!res.ok) {
-      const msg = await res.text().catch(() => '');
-      return NextResponse.json(
-        { error: 'MODEL_REQUEST_FAILED', detail: msg || `status ${res.status}` },
-        { status: 500 },
-      );
-    }
+요구사항:
+- 관계의 강/약점과 개선전략을 실전적으로.
+- 점수는 일관성 있게. facets와 summary/insights/설명이 자연스럽게 이어지도록.
+- 한국어, 짧고 단정한 코칭 톤.
+${JSON_SPEC}
+예시:
+{
+ "score": 82,
+ "facets": { "정서":78, "소통":85, "현실":72, "성장":88, "지속":80 },
+ "summary": "요약 2~3문장.",
+ "insights": ["실전조언1","실전조언2","실전조언3"],
+ "oneliner": "짧은 한 문장",
+ "explanation": { "정서":"...", "소통":"...", "현실":"...", "성장":"...", "지속":"..." }
+}
+`;
 
-    const data = await res.json();
-    const text =
-      data?.candidates?.[0]?.content?.parts
-        ?.map((p: any) => p?.text || '')
-        .join('\n') ?? '';
+    // 타임아웃 + 1회 재시도
+    const controller = new AbortController();
+    const to = setTimeout(()=>controller.abort(), 20000);
+    let text = '';
+    try {
+      text = await callGemini(userPayload, controller.signal);
+    } catch (e1) {
+      // 재시도 (새 controller)
+      const controller2 = new AbortController();
+      const to2 = setTimeout(()=>controller2.abort(), 20000);
+      try {
+        text = await callGemini(userPayload, controller2.signal);
+      } finally {
+        clearTimeout(to2);
+      }
+    } finally {
+      clearTimeout(to);
+    }
 
-    // ⚠️ JSON 스키마 변경 (explanation 추가)에 맞춰 파싱 로직 업데이트
-    const json = extractJson(text) || {};
+    const raw = sanitizeJson(text);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // 마지막 방어: 중괄호 블록만 추출 후 재시도
+      const m = raw.match(/\{[\s\S]*\}$/);
+      if (!m) throw new Error('JSON 파싱 실패');
+      parsed = JSON.parse(m[0]);
+    }
 
-    const score = clampScoreValue(json.score, 30, 98, 80);
-    const facets = normalizeFacetsOut(json.facets);
-    const explanation = typeof json.explanation === 'object' && json.explanation !== null ? json.explanation : {}; // explanation 추가
+    return NextResponse.json(normalizeOutput(parsed));
+  } catch (err: any) {
+    return NextResponse.json({ error: true, detail: err?.message || '서버 오류' }, { status: 500 });
+  }
+}
 
-    const out = {
-      score,
-      facets,
-      explanation: normalizeFacetsOut(explanation), // explanation 구조 정규화
-      summary:
-        typeof json.summary === 'string'
-          ? json.summary
-          : '두 사람의 관계는 조율과 소통을 통해 충분히 발전할 수 있는 가능성이 있습니다.',
-      insights: Array.isArray(json.insights) ? json.insights.slice(0, 5) : [],
-      oneliner:
-        typeof json.oneliner === 'string'
-          ? json.oneliner
-          : '서로의 차이를 이해할수록 관계의 깊이는 더 깊어집니다.',
-    };
-    
-    // ⚠️ explanation이 빈 객체일 경우, 임시로 summary를 넣어 클라이언트 에러 방지 (최종 배포 시 제거 권장)
-    if (Object.keys(out.explanation).length === 0) {
-        (out.explanation as any).emotion = out.summary;
-    }
-
-    return NextResponse.json(out);
-  } catch (e: any) {
-    console.error(e);
-    return NextResponse.json(
-      { error: 'AI_ERROR', detail: String(e?.message ?? e) },
-      { status: 500 },
-    );
-  }
+export async function GET(req: NextRequest) {
+  return NextResponse.json({ ok: true });
 }

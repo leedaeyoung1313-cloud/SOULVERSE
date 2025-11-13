@@ -36,9 +36,13 @@ function clampScore(v: number | undefined, min: number, max: number, fallback: n
 function normalizeFacets(facets: Facets | undefined): Facets {
   const base = { "정서": 80, "소통": 80, "현실": 70, "성장": 90, "지속": 80 };
   if (!facets) return base;
-  return Object.fromEntries(
-    Object.entries(base).map(([k, def]) => [k, clampScore((facets as any)[k], 0, 100, def)])
-  ) as Facets;
+  return {
+    "정서": clampScore(facets["정서"], 0, 100, base["정서"]),
+    "소통": clampScore(facets["소통"], 0, 100, base["소통"]),
+    "현실": clampScore(facets["현실"], 0, 100, base["현실"]),
+    "성장": clampScore(facets["성장"], 0, 100, base["성장"]),
+    "지속": clampScore(facets["지속"], 0, 100, base["지속"]),
+  };
 }
 
 const topicTitleMap: Record<string, string> = {
@@ -47,7 +51,7 @@ const topicTitleMap: Record<string, string> = {
   lucky_color: '행운 컬러 & 무드',
 };
 
-// 선택 가능한 값들
+// 선택 리스트
 const MBTI_LIST = [
   "ISTJ","ISFJ","INFJ","INTJ",
   "ISTP","ISFP","INFP","INTP",
@@ -55,32 +59,42 @@ const MBTI_LIST = [
   "ESTJ","ESFJ","ENFJ","ENTJ"
 ];
 const BLOOD_LIST = ["A", "B", "O", "AB"];
-const TIME_LIST = [
-  "00:00","01:00","02:00","03:00","04:00","05:00","06:00",
-  "07:00","08:00","09:00","10:00","11:00","12:00",
-  "13:00","14:00","15:00","16:00","17:00","18:00",
-  "19:00","20:00","21:00","22:00","23:00"
-];
+const HOUR_LIST = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+const MIN_LIST  = ["00","05","10","15","20","25","30","35","40","45","50","55"];
 
 export default function AnalysisPage({ params }: AnalysisPageProps) {
   const { topicKey } = params;
 
+  // 남
   const [manBirth, setManBirth] = useState('');
-  const [womanBirth, setWomanBirth] = useState('');
-  const [manMbti, setManMbti] = useState('');
-  const [womanMbti, setWomanMbti] = useState('');
+  const [manHour, setManHour]   = useState('');
+  const [manMin, setManMin]     = useState('');
+  const [manMbti, setManMbti]   = useState('');
   const [manBlood, setManBlood] = useState('');
+
+  // 여
+  const [womanBirth, setWomanBirth] = useState('');
+  const [womanHour, setWomanHour]   = useState('');
+  const [womanMin, setWomanMin]     = useState('');
+  const [womanMbti, setWomanMbti]   = useState('');
   const [womanBlood, setWomanBlood] = useState('');
-  const [manTime, setManTime] = useState('');
-  const [womanTime, setWomanTime] = useState('');
+
+  // 상태
   const [loading, setLoading] = useState(false);
-  const [data, setData] = useState<ApiResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [data, setData]       = useState<ApiResponse | null>(null);
+  const [error, setError]     = useState<string | null>(null);
 
   const title = useMemo(() => topicTitleMap[topicKey] ?? '궁합 분석', [topicKey]);
-  const canSubmit = useMemo(() => !!(manBirth && womanBirth && manMbti && womanMbti), [
-    manBirth, womanBirth, manMbti, womanMbti,
-  ]);
+
+  // 시간 문자열 조합 (선택 안 했으면 undefined)
+  const manTime   = manHour && manMin ? `${manHour}:${manMin}`     : undefined;
+  const womanTime = womanHour && womanMin ? `${womanHour}:${womanMin}` : undefined;
+
+  const canSubmit = useMemo(() =>
+    !!(manBirth && womanBirth && manMbti && womanMbti), [
+      manBirth, womanBirth, manMbti, womanMbti
+    ]
+  );
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -99,8 +113,8 @@ export default function AnalysisPage({ params }: AnalysisPageProps) {
         woman_mbti: womanMbti,
         man_blood: manBlood || undefined,
         woman_blood: womanBlood || undefined,
-        man_time: manTime || undefined,
-        woman_time: womanTime || undefined,
+        man_time: manTime,
+        woman_time: womanTime,
       };
 
       const res = await fetch(API_URL, {
@@ -115,7 +129,7 @@ export default function AnalysisPage({ params }: AnalysisPageProps) {
 
       setData({
         ...json,
-        score: clampScore(json.score, 30, 98, 80),
+        score : clampScore(json.score, 30, 98, 80),
         facets: normalizeFacets(json.facets),
       });
     } catch (err: any) {
@@ -131,54 +145,93 @@ export default function AnalysisPage({ params }: AnalysisPageProps) {
         <header className="text-center space-y-2">
           <p className="text-xs uppercase tracking-[0.2em] text-muted">SOULVERSE · COMPAT</p>
           <h1 className="text-3xl font-bold">{title}</h1>
-          <p className="text-sm text-muted">사주 · MBTI · 혈액형을 선택해 궁합을 분석합니다.</p>
+          <p className="text-sm text-muted">사주팔자 · MBTI · 혈액형을 선택해 궁합을 분석합니다.</p>
         </header>
 
         {/* 입력 폼 */}
         <section className="bg-card border border-borderc rounded-2xl p-6 shadow-deep">
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="grid md:grid-cols-2 gap-4">
+
               {/* 남자 */}
               <div className="space-y-3">
                 <h2 className="text-sm font-semibold">남자</h2>
+
                 <label className="block text-xs text-muted">생년월일</label>
-                <input type="date" value={manBirth} onChange={e=>setManBirth(e.target.value)} className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm" />
+                <input
+                  type="date"
+                  value={manBirth}
+                  onChange={e=>setManBirth(e.target.value)}
+                  className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm"
+                />
+
                 <label className="block text-xs text-muted">태어난 시간 (선택)</label>
-                <select value={manTime} onChange={e=>setManTime(e.target.value)} className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm">
-                  <option value="">선택</option>
-                  {TIME_LIST.map(t=><option key={t} value={t}>{t}</option>)}
-                </select>
+                <div className="grid grid-cols-2 gap-2">
+                  <select value={manHour} onChange={e=>setManHour(e.target.value)}
+                          className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm">
+                    <option value="">시 선택</option>
+                    {HOUR_LIST.map(h => <option key={h} value={h}>{h}시</option>)}
+                  </select>
+                  <select value={manMin} onChange={e=>setManMin(e.target.value)}
+                          className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm">
+                    <option value="">분 선택</option>
+                    {MIN_LIST.map(m => <option key={m} value={m}>{m}분</option>)}
+                  </select>
+                </div>
+
                 <label className="block text-xs text-muted">MBTI</label>
-                <select value={manMbti} onChange={e=>setManMbti(e.target.value)} className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm">
+                <select value={manMbti} onChange={e=>setManMbti(e.target.value)}
+                        className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm">
                   <option value="">선택</option>
-                  {MBTI_LIST.map(m=><option key={m} value={m}>{m}</option>)}
+                  {MBTI_LIST.map(m=> <option key={m} value={m}>{m}</option>)}
                 </select>
-                <label className="block text-xs text-muted">혈액형</label>
-                <select value={manBlood} onChange={e=>setManBlood(e.target.value)} className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm">
+
+                <label className="block text-xs text-muted">혈액형 (선택)</label>
+                <select value={manBlood} onChange={e=>setManBlood(e.target.value)}
+                        className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm">
                   <option value="">선택</option>
-                  {BLOOD_LIST.map(b=><option key={b} value={b}>{b}</option>)}
+                  {BLOOD_LIST.map(b=> <option key={b} value={b}>{b}</option>)}
                 </select>
               </div>
 
               {/* 여자 */}
               <div className="space-y-3">
                 <h2 className="text-sm font-semibold">여자</h2>
+
                 <label className="block text-xs text-muted">생년월일</label>
-                <input type="date" value={womanBirth} onChange={e=>setWomanBirth(e.target.value)} className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm" />
+                <input
+                  type="date"
+                  value={womanBirth}
+                  onChange={e=>setWomanBirth(e.target.value)}
+                  className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm"
+                />
+
                 <label className="block text-xs text-muted">태어난 시간 (선택)</label>
-                <select value={womanTime} onChange={e=>setWomanTime(e.target.value)} className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm">
-                  <option value="">선택</option>
-                  {TIME_LIST.map(t=><option key={t} value={t}>{t}</option>)}
-                </select>
+                <div className="grid grid-cols-2 gap-2">
+                  <select value={womanHour} onChange={e=>setWomanHour(e.target.value)}
+                          className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm">
+                    <option value="">시 선택</option>
+                    {HOUR_LIST.map(h => <option key={h} value={h}>{h}시</option>)}
+                  </select>
+                  <select value={womanMin} onChange={e=>setWomanMin(e.target.value)}
+                          className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm">
+                    <option value="">분 선택</option>
+                    {MIN_LIST.map(m => <option key={m} value={m}>{m}분</option>)}
+                  </select>
+                </div>
+
                 <label className="block text-xs text-muted">MBTI</label>
-                <select value={womanMbti} onChange={e=>setWomanMbti(e.target.value)} className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm">
+                <select value={womanMbti} onChange={e=>setWomanMbti(e.target.value)}
+                        className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm">
                   <option value="">선택</option>
-                  {MBTI_LIST.map(m=><option key={m} value={m}>{m}</option>)}
+                  {MBTI_LIST.map(m=> <option key={m} value={m}>{m}</option>)}
                 </select>
-                <label className="block text-xs text-muted">혈액형</label>
-                <select value={womanBlood} onChange={e=>setWomanBlood(e.target.value)} className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm">
+
+                <label className="block text-xs text-muted">혈액형 (선택)</label>
+                <select value={womanBlood} onChange={e=>setWomanBlood(e.target.value)}
+                        className="w-full bg-bg border border-borderc rounded-md px-3 py-2 text-sm">
                   <option value="">선택</option>
-                  {BLOOD_LIST.map(b=><option key={b} value={b}>{b}</option>)}
+                  {BLOOD_LIST.map(b=> <option key={b} value={b}>{b}</option>)}
                 </select>
               </div>
             </div>
@@ -192,6 +245,7 @@ export default function AnalysisPage({ params }: AnalysisPageProps) {
             >
               {loading ? (
                 <div className="flex items-center justify-center gap-2">
+                  {/* 스피너 */}
                   <div className="w-4 h-4 border-2 border-bg border-t-transparent rounded-full animate-spin"></div>
                   <span>AI 분석 중...</span>
                 </div>
@@ -202,7 +256,7 @@ export default function AnalysisPage({ params }: AnalysisPageProps) {
           </form>
         </section>
 
-        {/* 결과 영역 */}
+        {/* 결과 */}
         {data && !error && (
           <section className="bg-card border border-borderc rounded-2xl p-6 shadow-deep space-y-6">
             <div className="flex items-center gap-4">
