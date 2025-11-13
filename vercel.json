@@ -1,6 +1,6 @@
 {
   "functions": {
-    "api/compat/route.ts": {
+    "api/compat": {
       "maxDuration": 30
     }
   }
