@@ -1,3 +1,4 @@
+// Dummy line for Git to recognize changes
 // app/api/compat/route.ts - Gemini API 연동 (JSON 궁합 리포트 전용)
 import { NextRequest, NextResponse } from 'next/server';
 
